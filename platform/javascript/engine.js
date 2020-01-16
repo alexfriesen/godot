@@ -1,22 +1,29 @@
-		// The following is concatenated with generated code, and acts as the end
-		// of a wrapper for said code. See pre.js for the other part of the
-		// wrapper.
-		exposedLibs['PATH'] = PATH;
-		exposedLibs['FS'] = FS;
-		return Module;
-	},
+	// The following is concatenated with generated code, and acts as the end
+	// of a wrapper for said code. See pre.js for the other part of the
+	// wrapper.
+	exposedLibs['PATH'] = PATH;
+	exposedLibs['FS'] = FS;
+	return Module;
 };
 
-(function() {
-	var engine = Engine;
+(function (RuntimeEnvironment) {
+	const DOWNLOAD_ATTEMPTS_MAX = 4;
 
-	var DOWNLOAD_ATTEMPTS_MAX = 4;
+	let basePath = null;
+	let wasmFilenameExtensionOverride = null;
+	let engineLoadTask = null;
 
-	var basePath = null;
-	var wasmFilenameExtensionOverride = null;
-	var engineLoadPromise = null;
+	const loadingFiles = {};
 
-	var loadingFiles = {};
+	function findCanvas() {
+		const canvasCollection = document.getElementsByTagName('canvas');
+		const canvas = Array.from(canvasCollection).find(canvas => canvas instanceof HTMLCanvasElement);
+		if (canvas) {
+			return canvas;
+		}
+
+		throw new Error("No canvas found");
+	}
 
 	function getPathLeaf(path) {
 
@@ -31,37 +38,33 @@
 			path = path.slice(0, -1);
 		if (path.lastIndexOf('.') > path.lastIndexOf('/'))
 			path = path.slice(0, path.lastIndexOf('.'));
+
 		return path;
-	}
-
-	function getBaseName(path) {
-
-		return getPathLeaf(getBasePath(path));
 	}
 
 	Engine = function Engine() {
 
 		this.rtenv = null;
 
-		var LIBS = {};
+		let LIBS = {};
 
-		var initPromise = null;
-		var unloadAfterInit = true;
+		let initPromise = null;
+		let unloadAfterInit = true;
 
-		var preloadedFiles = [];
+		let preloadedFiles = [];
 
-		var resizeCanvasOnStart = true;
-		var progressFunc = null;
-		var preloadProgressTracker = {};
-		var lastProgress = { loaded: 0, total: 0 };
+		let resizeCanvasOnStart = true;
+		let progressFunc = null;
+		let preloadProgressTracker = {};
+		let lastProgress = { loaded: 0, total: 0 };
 
-		var canvas = null;
-		var executableName = null;
-		var locale = null;
-		var stdout = null;
-		var stderr = null;
+		let canvas = null;
+		let executableName = null;
+		let locale = null;
+		let stdout = null;
+		let stderr = null;
 
-		this.init = function(newBasePath) {
+		this.init = function (newBasePath) {
 
 			if (!initPromise) {
 				initPromise = Engine.load(newBasePath).then(
@@ -76,7 +79,7 @@
 
 		function instantiate(wasmBuf) {
 
-			var rtenvProps = {
+			const rtenvProps = {
 				engine: this,
 				ENV: {},
 			};
@@ -84,22 +87,22 @@
 				rtenvProps.print = stdout;
 			if (typeof stderr === 'function')
 				rtenvProps.printErr = stderr;
-			rtenvProps.instantiateWasm = function(imports, onSuccess) {
-				WebAssembly.instantiate(wasmBuf, imports).then(function(result) {
+			rtenvProps.instantiateWasm = function (imports, onSuccess) {
+				WebAssembly.instantiate(wasmBuf, imports).then(function (result) {
 					onSuccess(result.instance);
 				});
 				return {};
 			};
 
-			return new Promise(function(resolve, reject) {
+			return new Promise(function (resolve, reject) {
 				rtenvProps.onRuntimeInitialized = resolve;
 				rtenvProps.onAbort = reject;
 				rtenvProps.thisProgram = executableName;
-				rtenvProps.engine.rtenv = Engine.RuntimeEnvironment(rtenvProps, LIBS);
+				rtenvProps.engine.rtenv = RuntimeEnvironment(rtenvProps, LIBS);
 			});
 		}
 
-		this.preloadFile = function(pathOrBuffer, destPath) {
+		this.preloadFile = function (pathOrBuffer, destPath) {
 
 			if (pathOrBuffer instanceof ArrayBuffer) {
 				pathOrBuffer = new Uint8Array(pathOrBuffer);
@@ -113,7 +116,7 @@
 				});
 				return Promise.resolve();
 			} else if (typeof pathOrBuffer === 'string') {
-				return loadPromise(pathOrBuffer, preloadProgressTracker).then(function(xhr) {
+				return loadPromise(pathOrBuffer, preloadProgressTracker).then(function (xhr) {
 					preloadedFiles.push({
 						path: destPath || pathOrBuffer,
 						buffer: xhr.response
@@ -124,17 +127,10 @@
 			}
 		};
 
-		this.start = function() {
-
-			return this.init().then(
-				Function.prototype.apply.bind(synchronousStart, this, arguments)
-			);
-		};
-
-		this.startGame = function(execName, mainPack) {
+		this.startGame = function (execName, mainPack) {
 
 			executableName = execName;
-			var mainArgs = [ '--main-pack', mainPack ];
+			var mainArgs = ['--main-pack', mainPack];
 
 			return Promise.all([
 				// Load from directory,
@@ -146,47 +142,52 @@
 			);
 		};
 
-		function synchronousStart() {
-
-			if (canvas instanceof HTMLCanvasElement) {
-				this.rtenv.canvas = canvas;
-			} else {
-				var firstCanvas = document.getElementsByTagName('canvas')[0];
-				if (firstCanvas instanceof HTMLCanvasElement) {
-					this.rtenv.canvas = firstCanvas;
-				} else {
-					throw new Error("No canvas found");
-				}
+		function getCanvas() {
+			if (!(canvas instanceof HTMLCanvasElement)) {
+				canvas = findCanvas()
 			}
 
-			var actualCanvas = this.rtenv.canvas;
 			// canvas can grab focus on click
-			if (actualCanvas.tabIndex < 0) {
-				actualCanvas.tabIndex = 0;
+			if (canvas.tabIndex < 0) {
+				canvas.tabIndex = 0;
 			}
+
 			// necessary to calculate cursor coordinates correctly
-			actualCanvas.style.padding = 0;
-			actualCanvas.style.borderWidth = 0;
-			actualCanvas.style.borderStyle = 'none';
+			canvas.style.padding = 0;
+			canvas.style.borderWidth = 0;
+			canvas.style.borderStyle = 'none';
+
 			// disable right-click context menu
-			actualCanvas.addEventListener('contextmenu', function(ev) {
+			canvas.addEventListener('contextmenu', function (ev) {
 				ev.preventDefault();
 			}, false);
+
 			// until context restoration is implemented
-			actualCanvas.addEventListener('webglcontextlost', function(ev) {
+			canvas.addEventListener('webglcontextlost', function (ev) {
 				alert("WebGL context lost, please reload the page");
 				ev.preventDefault();
 			}, false);
 
-			if (locale) {
-				this.rtenv.locale = locale;
-			} else {
-				this.rtenv.locale = navigator.languages ? navigator.languages[0] : navigator.language;
+			return canvas;
+		}
+
+		function getLocale() {
+			if (!locale) {
+				locale = navigator.languages ? navigator.languages[0] : navigator.language;
 			}
-			this.rtenv.locale = this.rtenv.locale.split('.')[0];
+			locale = locale.split('.')[0];
+
+			return locale;
+		}
+
+		function synchronousStart() {
+
+			this.rtenv.canvas = getCanvas(canvas);
+
+			this.rtenv.locale = getLocale();
 			this.rtenv.resizeCanvasOnStart = resizeCanvasOnStart;
 
-			preloadedFiles.forEach(function(file) {
+			preloadedFiles.forEach(function (file) {
 				var dir = LIBS.PATH.dirname(file.path);
 				try {
 					LIBS.FS.stat(dir);
@@ -205,23 +206,23 @@
 			this.rtenv.callMain(arguments);
 		}
 
-		this.setProgressFunc = function(func) {
+		this.setProgressFunc = function (func) {
 			progressFunc = func;
 		};
 
-		this.setResizeCanvasOnStart = function(enabled) {
+		this.setResizeCanvasOnStart = function (enabled) {
 			resizeCanvasOnStart = enabled;
 		};
 
 		function animateProgress() {
 
-			var loaded = 0;
-			var total = 0;
-			var totalIsValid = true;
-			var progressIsFinal = true;
+			let loaded = 0;
+			let total = 0;
+			let totalIsValid = true;
+			let progressIsFinal = true;
 
-			[loadingFiles, preloadProgressTracker].forEach(function(tracker) {
-				Object.keys(tracker).forEach(function(file) {
+			[loadingFiles, preloadProgressTracker].forEach(function (tracker) {
+				Object.keys(tracker).forEach(function (file) {
 					if (!tracker[file].final)
 						progressIsFinal = false;
 					if (!totalIsValid || tracker[file].total === 0) {
@@ -243,21 +244,21 @@
 				requestAnimationFrame(animateProgress);
 		}
 
-		this.setCanvas = function(elem) {
+		this.setCanvas = function (elem) {
 			canvas = elem;
 		};
 
-		this.setExecutableName = function(newName) {
+		this.setExecutableName = function (newName) {
 
 			executableName = newName;
 		};
 
-		this.setLocale = function(newLocale) {
+		this.setLocale = function (newLocale) {
 
 			locale = newLocale;
 		};
 
-		this.setUnloadAfterInit = function(enabled) {
+		this.setUnloadAfterInit = function (enabled) {
 
 			if (enabled && !unloadAfterInit && initPromise) {
 				initPromise.then(Engine.unloadEngine);
@@ -265,9 +266,9 @@
 			unloadAfterInit = enabled;
 		};
 
-		this.setStdoutFunc = function(func) {
+		this.setStdoutFunc = function (func) {
 
-			var print = function(text) {
+			const print = function (text) {
 				if (arguments.length > 1) {
 					text = Array.prototype.slice.call(arguments).join(" ");
 				}
@@ -278,9 +279,9 @@
 			stdout = print;
 		};
 
-		this.setStderrFunc = function(func) {
+		this.setStderrFunc = function (func) {
 
-			var printErr = function(text) {
+			const printErr = function (text) {
 				if (arguments.length > 1)
 					text = Array.prototype.slice.call(arguments).join(" ");
 				func(text);
@@ -293,23 +294,21 @@
 
 	}; // Engine()
 
-	Engine.RuntimeEnvironment = engine.RuntimeEnvironment;
+	Engine.isWebGLAvailable = function (majorVersion = 1) {
 
-	Engine.isWebGLAvailable = function(majorVersion = 1) {
-
-		var testContext = false;
+		let testContext = false;
 		try {
-			var testCanvas = document.createElement('canvas');
+			const testCanvas = document.createElement('canvas');
 			if (majorVersion === 1) {
 				testContext = testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl');
 			} else if (majorVersion === 2) {
 				testContext = testCanvas.getContext('webgl2') || testCanvas.getContext('experimental-webgl2');
 			}
-		} catch (e) {}
+		} catch (e) { }
 		return !!testContext;
 	};
 
-	Engine.setWebAssemblyFilenameExtension = function(override) {
+	Engine.setWebAssemblyFilenameExtension = function (override) {
 
 		if (String(override).length === 0) {
 			throw new Error('Invalid WebAssembly filename extension override');
@@ -317,32 +316,36 @@
 		wasmFilenameExtensionOverride = String(override);
 	}
 
-	Engine.load = function(newBasePath) {
+	Engine.load = function (newBasePath) {
 
-		if (newBasePath !== undefined) basePath = getBasePath(newBasePath);
-		if (engineLoadPromise === null) {
-			if (typeof WebAssembly !== 'object')
-				return Promise.reject(new Error("Browser doesn't support WebAssembly"));
-			// TODO cache/retrieve module to/from idb
-			engineLoadPromise = loadPromise(basePath + '.' + (wasmFilenameExtensionOverride || 'wasm')).then(function(xhr) {
-				return xhr.response;
-			});
-			engineLoadPromise = engineLoadPromise.catch(function(err) {
-				engineLoadPromise = null;
-				throw err;
-			});
+		if (newBasePath !== undefined) {
+			basePath = getBasePath(newBasePath);
 		}
-		return engineLoadPromise;
+		if (engineLoadTask === null) {
+			if (typeof WebAssembly !== 'object') {
+				return Promise.reject(new Error("Browser doesn't support WebAssembly"));
+			}
+
+			// TODO cache/retrieve module to/from idb
+			engineLoadTask = loadPromise(`${basePath}.${(wasmFilenameExtensionOverride || 'wasm')}`)
+				.then(function (xhr) {
+					return xhr.response;
+				}).catch(function (err) {
+					engineLoadTask = null;
+					throw err;
+				});
+		}
+		return engineLoadTask;
 	};
 
-	Engine.unload = function() {
-		engineLoadPromise = null;
+	Engine.unload = function () {
+		engineLoadTask = null;
 	};
 
 	function loadPromise(file, tracker) {
 		if (tracker === undefined)
 			tracker = loadingFiles;
-		return new Promise(function(resolve, reject) {
+		return new Promise(function (resolve, reject) {
 			loadXHR(resolve, reject, file, tracker);
 		});
 	}
@@ -354,7 +357,7 @@
 		if (!file.endsWith('.js')) {
 			xhr.responseType = 'arraybuffer';
 		}
-		['loadstart', 'progress', 'load', 'error', 'abort'].forEach(function(ev) {
+		['loadstart', 'progress', 'load', 'error', 'abort'].forEach(function (ev) {
 			xhr.addEventListener(ev, onXHREvent.bind(xhr, resolve, reject, file, tracker));
 		});
 		xhr.send();
@@ -410,4 +413,4 @@
 				break;
 		}
 	}
-})();
+})(RuntimeEnvironment);
